@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
+
 	"github.com/google/uuid"
 	"github.com/kwintti/blog_aggregator/internal/database"
 	_ "github.com/lib/pq"
@@ -43,4 +45,28 @@ func (cfg *apiConfig) handlerAddUser(w http.ResponseWriter, r *http.Request) {
         Name: createdUser.Name,
     }
     respondWithJSON(w, 201, userFromDb)
+}
+
+type paramsToken struct{
+    Apikey string `json:"apikey"`
+}
+
+func (cfg *apiConfig) handlerGetUserInfo(w http.ResponseWriter, r *http.Request) {
+    apikey := r.Header.Get("Authorization")
+    apikeyParsed := strings.TrimPrefix(apikey, "ApiKey ")
+    ctx := r.Context()
+    getUserInfo, err := cfg.DB.RetriveUser(ctx, apikeyParsed)
+    if err != nil {
+        log.Print("Error getting user info ", err)
+        respondWithError(w, http.StatusInternalServerError, "Error getting user from db")
+    }
+    returnUserInfo := user {
+        Id: getUserInfo.ID, 
+        Created_at: getUserInfo.CreatedAt,
+        Updated_at: getUserInfo.UpdatedAt,
+        Name: getUserInfo.Name,
+        ApiKey: getUserInfo.Apikey,
+    }
+    respondWithJSON(w, 200, returnUserInfo)
+    
 }

@@ -30,6 +30,7 @@ func main(){
     mux.HandleFunc("GET /v1/readiness", readinessHandler)
     mux.HandleFunc("GET /v1/err", errorHandler)
     mux.HandleFunc("POST /v1/users", apiConfig.handlerAddUser)
+    mux.HandleFunc("GET /v1/users", apiConfig.handlerGetUserInfo)
     corsMux := middlewareCors(mux)
     server := &http.Server{
         Addr: ":"+port,
@@ -53,6 +54,7 @@ type user struct {
     Created_at time.Time `json:"created_at"`
     Updated_at time.Time `json:"updated_at"`
     Name string `json:"name"`
+    ApiKey string `json:"apikey"`
 }
 
 func readinessHandler(w http.ResponseWriter, r *http.Request) {

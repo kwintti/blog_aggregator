@@ -13,9 +13,9 @@ import (
 )
 
 const createUser = `-- name: CreateUser :one
-insert into users (id, created_at, updated_at, name)
-values($1, $2, $3, $4)
-returning id, created_at, updated_at, name
+insert into users (id, created_at, updated_at, name, apikey)
+values($1, $2, $3, $4, encode(sha256(random()::text::bytea), 'hex'))
+returning id, created_at, updated_at, name, apikey
 `
 
 type CreateUserParams struct {
@@ -38,6 +38,25 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Name,
+		&i.Apikey,
+	)
+	return i, err
+}
+
+const retriveUser = `-- name: RetriveUser :one
+select id, created_at, updated_at, name, apikey from users
+where apikey = $1
+`
+
+func (q *Queries) RetriveUser(ctx context.Context, apikey string) (User, error) {
+	row := q.db.QueryRowContext(ctx, retriveUser, apikey)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Name,
+		&i.Apikey,
 	)
 	return i, err
 }

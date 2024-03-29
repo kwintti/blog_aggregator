@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,22 +50,92 @@ type paramsToken struct{
     Apikey string `json:"apikey"`
 }
 
-func (cfg *apiConfig) handlerGetUserInfo(w http.ResponseWriter, r *http.Request) {
-    apikey := r.Header.Get("Authorization")
-    apikeyParsed := strings.TrimPrefix(apikey, "ApiKey ")
-    ctx := r.Context()
-    getUserInfo, err := cfg.DB.RetriveUser(ctx, apikeyParsed)
-    if err != nil {
-        log.Print("Error getting user info ", err)
-        respondWithError(w, http.StatusInternalServerError, "Error getting user from db")
-    }
+func (cfg *apiConfig) handlerGetUserInfo(w http.ResponseWriter, r *http.Request, infoUser database.User) {
     returnUserInfo := user {
-        Id: getUserInfo.ID, 
-        Created_at: getUserInfo.CreatedAt,
-        Updated_at: getUserInfo.UpdatedAt,
-        Name: getUserInfo.Name,
-        ApiKey: getUserInfo.Apikey,
+        Id: infoUser.ID, 
+        Created_at: infoUser.CreatedAt,
+        Updated_at: infoUser.UpdatedAt,
+        Name: infoUser.Name,
+        ApiKey: infoUser.Apikey,
     }
     respondWithJSON(w, 200, returnUserInfo)
     
+}
+type feed struct {
+    Id uuid.UUID `json:"id"` 
+    Name string `json:"name"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdateAt time.Time `json:"updated_at"`
+    Url string `json:"url"`
+    UserId uuid.UUID `json:"user_id"`
+}
+
+func (cfg *apiConfig) handlerCreateFeed(w http.ResponseWriter, r *http.Request, user database.User) {
+    type paramsFeed struct {
+        Name string `json:"name"`
+        Url string `json:"url"`
+    }
+    decoder := json.NewDecoder(r.Body)
+    params := paramsFeed{}
+    err := decoder.Decode(&params)
+    if err != nil {
+        log.Print("Error decoding json ", err)
+        respondWithError(w, 500, "Error decoding json")
+        return
+    }
+    ctx := r.Context()
+    timeNow := time.Now().UTC()
+    feedID := uuid.New()
+    newFeed, err := cfg.DB.AddFeed(ctx, database.AddFeedParams{
+                                                            ID: feedID,
+                                                            CreatedAt: timeNow,
+                                                            UpdatedAt: timeNow,
+                                                            Name: params.Name,
+                                                            Url: params.Url,
+                                                            UserID: user.ID,})
+    if err != nil {
+        log.Print("Cannot add to database ", err)
+        respondWithError(w, 500, "Cannot add to database")
+        return 
+    }
+    feedFollow, err := cfg.DB.AddFeedFollow(ctx, database.AddFeedFollowParams{
+                                                                            ID: uuid.New(),
+                                                                            CreatedAt: timeNow,
+                                                                            UpdatedAt: timeNow,
+                                                                            UserID: user.ID,
+                                                                            FeedID: feedID,
+                                                                            })
+    if err != nil {
+        log.Print("Couldn't add a feed follow: ", err)
+        respondWithError(w, 500, "Couldn't add a feed follow")
+        return
+    }
+    addedFeed := feed{
+                    Id: newFeed.ID,
+                    CreatedAt: newFeed.CreatedAt,
+                    UpdateAt: newFeed.UpdatedAt,
+                    Name: newFeed.Name,
+                    Url: newFeed.Url,
+                    UserId: newFeed.UserID,
+                    }
+    addedFeedFollow := addFeedFollow{
+                    Id: feedFollow.ID,
+                    CreatedAt: feedFollow.CreatedAt,
+                    UpdatedAt: feedFollow.UpdatedAt,
+                    UserId: feedFollow.UserID,
+                    FeedId: feedFollow.FeedID,
+                    }
+    type feedAndFollow struct {
+        Feed feed `json:"feed"`
+        FeedFollow addFeedFollow `json:"feed_follow"`
+    }
+
+    outputFeedAndFollow := feedAndFollow{
+                    Feed: addedFeed,
+                    FeedFollow: addedFeedFollow,
+                    }
+
+
+    respondWithJSON(w, 201, outputFeedAndFollow)
+
 }

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -30,7 +31,12 @@ func main(){
     mux.HandleFunc("GET /v1/readiness", readinessHandler)
     mux.HandleFunc("GET /v1/err", errorHandler)
     mux.HandleFunc("POST /v1/users", apiConfig.handlerAddUser)
-    mux.HandleFunc("GET /v1/users", apiConfig.handlerGetUserInfo)
+    mux.HandleFunc("GET /v1/users", apiConfig.middlewareAuth(apiConfig.handlerGetUserInfo))
+    mux.HandleFunc("POST /v1/feeds", apiConfig.middlewareAuth(apiConfig.handlerCreateFeed))
+    mux.HandleFunc("GET /v1/feeds", apiConfig.handlerGetFeeds)
+    mux.HandleFunc("POST /v1/feed_follows", apiConfig.middlewareAuth(apiConfig.handlerCreateFeedFollow))
+    mux.HandleFunc("GET /v1/feed_follows", apiConfig.middlewareAuth(apiConfig.handlerGetFeedFollows))
+    mux.HandleFunc("DELETE /v1/feed_follows/{feedFollowID}", apiConfig.middlewareAuth(apiConfig.handlerDeleteFeed))
     corsMux := middlewareCors(mux)
     server := &http.Server{
         Addr: ":"+port,
@@ -56,6 +62,151 @@ type user struct {
     Name string `json:"name"`
     ApiKey string `json:"apikey"`
 }
+
+type FeedFollows struct {
+    Id uuid.UUID `json:"id"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+    UserId uuid.UUID `json:"user_id"`
+    FeedId uuid.UUID `json:"feed_id"`
+} 
+
+type authedHandler func(http.ResponseWriter, *http.Request, database.User)
+
+func (cfg *apiConfig) handlerGetFeedFollows(w http.ResponseWriter, r *http.Request, user database.User) {
+    ctx := r.Context()
+    rows, err := cfg.DB.AllUserFeedFollows(ctx, user.ID)
+    if err != nil {
+        log.Print("Couldn't get feeds: ", err)
+        respondWithError(w, 500, "Couldn't get feeds")
+        return
+    }
+    var outpuFeeds []FeedFollows
+    for _, row := range rows {
+        outpuFeeds = append(outpuFeeds, FeedFollows{
+                                                    Id: row.ID,
+                                                    CreatedAt: row.CreatedAt,
+                                                    UpdatedAt: row.UpdatedAt,
+                                                    UserId: row.UserID,
+                                                    FeedId: row.UserID,
+                                                    })
+    }
+    respondWithJSON(w, 200, outpuFeeds)
+
+    
+}
+
+type addFeedFollow struct {
+    Id uuid.UUID `json:"id"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+    UserId uuid.UUID `json:"user_id"`
+    FeedId uuid.UUID `json:"feed_id"`
+}
+
+func (cfg *apiConfig) handlerCreateFeedFollow(w http.ResponseWriter, r *http.Request, user database.User) {
+    type paramsFeed struct {
+        FeedId uuid.UUID `json:"feed_id"`
+    }
+    decoder := json.NewDecoder(r.Body) 
+    params := paramsFeed{}
+    err := decoder.Decode(&params)
+    if err != nil {
+        log.Print("Couldn't parse params ", err)
+        respondWithError(w, 500, "Couldn't parse params")
+        return
+    }
+    timeNow := time.Now().UTC()
+    ctx := r.Context()
+    createdFollowFeed, err := cfg.DB.AddFeedFollow(ctx, database.AddFeedFollowParams{
+                                                                                    ID: uuid.New(),
+                                                                                    CreatedAt: timeNow,
+                                                                                    UpdatedAt: timeNow,
+                                                                                    UserID: user.ID,
+                                                                                    FeedID: params.FeedId,
+                                                                                    })
+    if err != nil {
+        if err == sql.ErrNoRows {
+            fmt.Print("hello")
+        }
+        log.Print("Couldn't create feed follow ", err)
+        respondWithError(w, 500, "Couldn't create feed follow")
+        return
+    }
+    responseFeedFollow := addFeedFollow{Id: createdFollowFeed.ID,
+                                        CreatedAt: createdFollowFeed.CreatedAt,
+                                        UpdatedAt: createdFollowFeed.UpdatedAt,
+                                        UserId: createdFollowFeed.UserID, 
+                                        FeedId: createdFollowFeed.FeedID,}
+
+    respondWithJSON(w, 201, responseFeedFollow)
+}
+
+func (cfg *apiConfig) handlerDeleteFeed(w http.ResponseWriter, r *http.Request, user database.User) {
+    id := r.PathValue("feedFollowID")
+    idUUID, err := uuid.Parse(id)
+    if err != nil {
+        log.Print("Couldn't transfer string to UUID: ", err)
+        respondWithError(w, 500, "Couldn't parse uuid")
+        return
+    }
+    ctx := r.Context()
+    err = cfg.DB.DeleteFeed(ctx, database.DeleteFeedParams{UserID: user.ID, ID: idUUID,})
+    if err != nil {
+        log.Print("Couldn't unfollow feed: ", err)
+        respondWithError(w, 500, "Couldn't unfollow the feed")
+        return
+    }
+    w.WriteHeader(204)
+}
+
+
+func (cfg *apiConfig) middlewareAuth(handler authedHandler) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        apikey := r.Header.Get("Authorization")
+        apikeyParsed := strings.TrimPrefix(apikey, "ApiKey ")
+        ctx := r.Context()
+        user, err := cfg.DB.RetriveUser(ctx, apikeyParsed)
+        if err != nil {
+            if err == sql.ErrNoRows {
+                log.Print("No results found ", err)
+                respondWithError(w, http.StatusUnauthorized, "User results found")
+            } else {
+                log.Print("Error getting user info ", err)
+                respondWithError(w, http.StatusInternalServerError, "Error getting user from db")
+            }
+            return
+
+        }
+        handler(w, r, user)  
+    }
+}
+
+func (cfg *apiConfig) handlerGetFeeds(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    rows, err := cfg.DB.ListFeeds(ctx)
+    if err != nil {
+        log.Print("Couldn't retrive feeds")
+        respondWithError(w, 500, "Couldn't retrive feeds")
+        return
+    }
+    var feeds []feed
+    for _,row := range rows {
+        feeds = append(feeds, feed{ Id: row.ID,
+                                    CreatedAt: row.CreatedAt,
+                                    UpdateAt: row.UpdatedAt,
+                                    Name: row.Name,
+                                    Url: row.Url,
+                                    UserId: row.UserID,
+                                })
+    }
+    if feeds != nil {
+        respondWithJSON(w, 200, feeds)
+    } else {
+        respondWithError(w, 500, "No feeds available") 
+    }
+}
+
 
 func readinessHandler(w http.ResponseWriter, r *http.Request) {
     type resp struct {

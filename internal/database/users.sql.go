@@ -12,6 +12,109 @@ import (
 	"github.com/google/uuid"
 )
 
+const addFeed = `-- name: AddFeed :one
+insert into feeds (id, created_at, updated_at, name, url, user_id)
+values($1, $2, $3, $4, $5, $6)
+returning id, created_at, updated_at, name, url, user_id
+`
+
+type AddFeedParams struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Name      string
+	Url       string
+	UserID    uuid.UUID
+}
+
+func (q *Queries) AddFeed(ctx context.Context, arg AddFeedParams) (Feed, error) {
+	row := q.db.QueryRowContext(ctx, addFeed,
+		arg.ID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.Name,
+		arg.Url,
+		arg.UserID,
+	)
+	var i Feed
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Name,
+		&i.Url,
+		&i.UserID,
+	)
+	return i, err
+}
+
+const addFeedFollow = `-- name: AddFeedFollow :one
+insert into feed_follow (id, created_at, updated_at, user_id, feed_id)
+values($1, $2, $3, $4, $5)
+returning id, created_at, updated_at, user_id, feed_id
+`
+
+type AddFeedFollowParams struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	UserID    uuid.UUID
+	FeedID    uuid.UUID
+}
+
+func (q *Queries) AddFeedFollow(ctx context.Context, arg AddFeedFollowParams) (FeedFollow, error) {
+	row := q.db.QueryRowContext(ctx, addFeedFollow,
+		arg.ID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.UserID,
+		arg.FeedID,
+	)
+	var i FeedFollow
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UserID,
+		&i.FeedID,
+	)
+	return i, err
+}
+
+const allUserFeedFollows = `-- name: AllUserFeedFollows :many
+select id, created_at, updated_at, user_id, feed_id from feed_follow
+where user_id = $1
+`
+
+func (q *Queries) AllUserFeedFollows(ctx context.Context, userID uuid.UUID) ([]FeedFollow, error) {
+	rows, err := q.db.QueryContext(ctx, allUserFeedFollows, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FeedFollow
+	for rows.Next() {
+		var i FeedFollow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UserID,
+			&i.FeedID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createUser = `-- name: CreateUser :one
 insert into users (id, created_at, updated_at, name, apikey)
 values($1, $2, $3, $4, encode(sha256(random()::text::bytea), 'hex'))
@@ -41,6 +144,74 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.Apikey,
 	)
 	return i, err
+}
+
+const deleteFeed = `-- name: DeleteFeed :exec
+delete from feed_follow
+where user_id = $1
+and id = $2
+`
+
+type DeleteFeedParams struct {
+	UserID uuid.UUID
+	ID     uuid.UUID
+}
+
+func (q *Queries) DeleteFeed(ctx context.Context, arg DeleteFeedParams) error {
+	_, err := q.db.ExecContext(ctx, deleteFeed, arg.UserID, arg.ID)
+	return err
+}
+
+const getFollowFeed = `-- name: GetFollowFeed :one
+select id, created_at, updated_at, user_id, feed_id from feed_follow
+where feed_id = $1
+`
+
+func (q *Queries) GetFollowFeed(ctx context.Context, feedID uuid.UUID) (FeedFollow, error) {
+	row := q.db.QueryRowContext(ctx, getFollowFeed, feedID)
+	var i FeedFollow
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UserID,
+		&i.FeedID,
+	)
+	return i, err
+}
+
+const listFeeds = `-- name: ListFeeds :many
+select id, created_at, updated_at, name, url, user_id from feeds
+`
+
+func (q *Queries) ListFeeds(ctx context.Context) ([]Feed, error) {
+	rows, err := q.db.QueryContext(ctx, listFeeds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Feed
+	for rows.Next() {
+		var i Feed
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Name,
+			&i.Url,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const retriveUser = `-- name: RetriveUser :one

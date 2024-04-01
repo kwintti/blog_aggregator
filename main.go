@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
+
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/kwintti/blog_aggregator/internal/database"
@@ -43,9 +48,12 @@ func main(){
         Handler: corsMux,
     }
     fmt.Printf("Serving on port %s ...", port)
+    ctx, cancelFunc := context.WithCancel(context.Background())
+    apiConfig.startScheduledFetching(ctx)
     log.Fatal(server.ListenAndServe())
-
+    cancelFunc()
 }
+
 
 type apiConfig struct {
 	DB *database.Queries
@@ -233,6 +241,118 @@ func middlewareCors(next http.Handler) http.Handler {
         })
 }
 
+func (cfg *apiConfig) getNextFeedsToFetch(numberOfRows int32) []feed {    
+    ctx := context.TODO()
+    rows, err := cfg.DB.GetNextFeedsToFetch(ctx, numberOfRows) 
+    if err != nil {
+        if err == sql.ErrNoRows {
+            log.Print("No rows found: ", err) 
+        } else {
+            log.Print("Couldn't retrive from database: ", err)
+        }
+    }
+    var rowsOut []feed
+    for _, row := range rows {
+        rowsOut = append(rowsOut, databaseFeedToFeed(row)) 
+    }
+    return rowsOut
+}
+
+func (cfg *apiConfig) markFeedFetched(feedId uuid.UUID) database.Feed{
+    var convertedToNullTime sql.NullTime
+
+    ctx := context.TODO() 
+    
+    timeNow := time.Now().UTC()
+    convertedToNullTime.Time = timeNow
+    convertedToNullTime.Valid = true
+
+    updatedFeed, err := cfg.DB.MarkFeedFetched(ctx, database.MarkFeedFetchedParams{ID: feedId, LastFetchAt: convertedToNullTime, UpdatedAt: timeNow})
+    if err != nil {
+        log.Print("Couldn't update feed")
+        return database.Feed{}
+    }
+    return updatedFeed
+
+}
+type xmlParse struct {
+    Channel struct {
+        Title string `xml:"title"`
+        Link  struct {
+            Text string `xml:",chardata"`
+            Href string `xml:"href,attr"`
+            Rel  string `xml:"rel,attr"`
+            Type string `xml:"type,attr"`
+        } `xml:"link"`
+        Description   string `xml:"description"`
+        Generator     string `xml:"generator"`
+        Language      string `xml:"language"`
+        LastBuildDate string `xml:"lastBuildDate"`
+        Items         []Item `xml:"item"`
+    } `xml:"channel"`
+}    
+
+type Item struct {
+    Title       string `xml:"title"`
+    Link        string `xml:"link"`
+    PubDate     string `xml:"pubDate"`
+    Guid        string `xml:"guid"`
+    Description string `xml:"description"`
+}
+
+func fetchXmlData(url string) xmlParse{
+    
+    resp, err := http.Get(url)
+    if err != nil {
+        log.Print("Couldn't fetch from url: ", err)
+        return xmlParse{}
+    }
+    body, err := io.ReadAll(resp.Body)
+    if err != nil { 
+        log.Print("Couldn't read body from response: ", err)
+    }
+    resp.Body.Close()
+    v := xmlParse{} 
+    err = xml.Unmarshal([]byte(body), &v)
+    if err != nil {
+        log.Print("Couldn't parse xml: ", err)
+        return xmlParse{}
+    }
+    return v 
+}
+
+func (cfg *apiConfig) fetchingFeeds(wg *sync.WaitGroup) {
+    feeds := cfg.getNextFeedsToFetch(10) 
+    fmt.Println(time.Now())
+    for _, feed := range feeds {
+        feedData := fetchXmlData(feed.Url) 
+        for _, item := range feedData.Channel.Items {
+            fmt.Println(item.Title)
+        }
+    }
+}
+
+func (cfg *apiConfig) startScheduledFetching(ctx context.Context) {
+    var wg sync.WaitGroup
+    ticker := time.NewTicker(60 * time.Second)
+    go func() {
+        for {
+            wg.Add(1)
+            go func() {
+                defer wg.Done()
+                cfg.fetchingFeeds(&wg)
+            }()
+            select {
+            case <-ticker.C:
+                continue
+            case <-ctx.Done():
+                ticker.Stop()
+                wg.Wait()
+                return
+            }
+        }
+    }()
+}
 
 func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
     w.Header().Set("Content-Type", "application/json")

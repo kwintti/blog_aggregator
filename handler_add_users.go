@@ -68,7 +68,32 @@ type feed struct {
     UpdateAt time.Time `json:"updated_at"`
     Url string `json:"url"`
     UserId uuid.UUID `json:"user_id"`
+    LastFetchAt *time.Time `json:"last_fetched_at"`
 }
+
+
+func databaseFeedToFeed(inputFeed database.Feed) feed {
+    var convertedTime *time.Time
+    
+    if inputFeed.LastFetchAt.Valid {
+        convertedTime = &inputFeed.LastFetchAt.Time
+    } else {
+        convertedTime = nil
+    }
+
+    ouputFeed := feed{
+                    Id: inputFeed.ID,
+                    CreatedAt: inputFeed.CreatedAt,
+                    UpdateAt: inputFeed.UpdatedAt,
+                    Name: inputFeed.Name,
+                    Url: inputFeed.Url,
+                    UserId: inputFeed.UserID,
+                    LastFetchAt: convertedTime, 
+                }
+
+    return ouputFeed 
+}
+
 
 func (cfg *apiConfig) handlerCreateFeed(w http.ResponseWriter, r *http.Request, user database.User) {
     type paramsFeed struct {
@@ -110,14 +135,7 @@ func (cfg *apiConfig) handlerCreateFeed(w http.ResponseWriter, r *http.Request, 
         respondWithError(w, 500, "Couldn't add a feed follow")
         return
     }
-    addedFeed := feed{
-                    Id: newFeed.ID,
-                    CreatedAt: newFeed.CreatedAt,
-                    UpdateAt: newFeed.UpdatedAt,
-                    Name: newFeed.Name,
-                    Url: newFeed.Url,
-                    UserId: newFeed.UserID,
-                    }
+    addedFeed := databaseFeedToFeed(newFeed)
     addedFeedFollow := addFeedFollow{
                     Id: feedFollow.ID,
                     CreatedAt: feedFollow.CreatedAt,

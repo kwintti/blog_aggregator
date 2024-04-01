@@ -32,3 +32,14 @@ where user_id = $1;
 delete from feed_follow
 where user_id = $1
 and id = $2;
+
+-- name: GetNextFeedsToFetch :many
+select * from feeds
+order by last_fetch_at nulls first
+limit $1;
+
+-- name: MarkFeedFetched :one
+update feeds
+set updated_at = $1, last_fetch_at = $2
+where id = $3 
+returning *;

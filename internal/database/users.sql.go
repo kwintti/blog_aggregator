@@ -117,6 +117,48 @@ func (q *Queries) AllUserFeedFollows(ctx context.Context, userID uuid.UUID) ([]F
 	return items, nil
 }
 
+const createPost = `-- name: CreatePost :one
+insert into posts (id, created_at, updated_at, title, url, description, published_at, feed_id)
+values($1, $2, $3, $4, $5, $6, $7, $8)
+returning id, created_at, updated_at, title, url, description, published_at, feed_id
+`
+
+type CreatePostParams struct {
+	ID          uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Title       sql.NullString
+	Url         sql.NullString
+	Description sql.NullString
+	PublishedAt sql.NullTime
+	FeedID      uuid.UUID
+}
+
+func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Post, error) {
+	row := q.db.QueryRowContext(ctx, createPost,
+		arg.ID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.Title,
+		arg.Url,
+		arg.Description,
+		arg.PublishedAt,
+		arg.FeedID,
+	)
+	var i Post
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Title,
+		&i.Url,
+		&i.Description,
+		&i.PublishedAt,
+		&i.FeedID,
+	)
+	return i, err
+}
+
 const createUser = `-- name: CreateUser :one
 insert into users (id, created_at, updated_at, name, apikey)
 values($1, $2, $3, $4, encode(sha256(random()::text::bytea), 'hex'))
@@ -203,6 +245,77 @@ func (q *Queries) GetNextFeedsToFetch(ctx context.Context, limit int32) ([]Feed,
 			&i.UpdatedAt,
 			&i.Name,
 			&i.Url,
+			&i.UserID,
+			&i.LastFetchAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPostByUser = `-- name: GetPostByUser :many
+select posts.id, posts.created_at, posts.updated_at, title, posts.url, description, published_at, feed_id, feeds.id, feeds.created_at, feeds.updated_at, name, feeds.url, user_id, last_fetch_at from posts
+inner join feeds
+on posts.feed_id = feeds.id
+where feeds.user_id = $1
+order by posts.updated_at desc
+limit $2
+`
+
+type GetPostByUserParams struct {
+	UserID uuid.UUID
+	Limit  int32
+}
+
+type GetPostByUserRow struct {
+	ID          uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Title       sql.NullString
+	Url         sql.NullString
+	Description sql.NullString
+	PublishedAt sql.NullTime
+	FeedID      uuid.UUID
+	ID_2        uuid.UUID
+	CreatedAt_2 time.Time
+	UpdatedAt_2 time.Time
+	Name        string
+	Url_2       string
+	UserID      uuid.UUID
+	LastFetchAt sql.NullTime
+}
+
+func (q *Queries) GetPostByUser(ctx context.Context, arg GetPostByUserParams) ([]GetPostByUserRow, error) {
+	rows, err := q.db.QueryContext(ctx, getPostByUser, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetPostByUserRow
+	for rows.Next() {
+		var i GetPostByUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Title,
+			&i.Url,
+			&i.Description,
+			&i.PublishedAt,
+			&i.FeedID,
+			&i.ID_2,
+			&i.CreatedAt_2,
+			&i.UpdatedAt_2,
+			&i.Name,
+			&i.Url_2,
 			&i.UserID,
 			&i.LastFetchAt,
 		); err != nil {

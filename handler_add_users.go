@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 	"time"
-
+    "fmt"
 	"github.com/google/uuid"
 	"github.com/kwintti/blog_aggregator/internal/database"
 	_ "github.com/lib/pq"
@@ -96,6 +96,7 @@ func databaseFeedToFeed(inputFeed database.Feed) feed {
 
 
 func (cfg *apiConfig) handlerCreateFeed(w http.ResponseWriter, r *http.Request, user database.User) {
+    fmt.Println("olen tässä")
     type paramsFeed struct {
         Name string `json:"name"`
         Url string `json:"url"`

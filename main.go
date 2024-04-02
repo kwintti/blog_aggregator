@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/kwintti/blog_aggregator/internal/database"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 func main(){
@@ -41,6 +42,7 @@ func main(){
     mux.HandleFunc("GET /v1/feeds", apiConfig.handlerGetFeeds)
     mux.HandleFunc("POST /v1/feed_follows", apiConfig.middlewareAuth(apiConfig.handlerCreateFeedFollow))
     mux.HandleFunc("GET /v1/feed_follows", apiConfig.middlewareAuth(apiConfig.handlerGetFeedFollows))
+    mux.HandleFunc("GET /v1/posts", apiConfig.middlewareAuth(apiConfig.handlerGetPosts))
     mux.HandleFunc("DELETE /v1/feed_follows/{feedFollowID}", apiConfig.middlewareAuth(apiConfig.handlerDeleteFeed))
     corsMux := middlewareCors(mux)
     server := &http.Server{
@@ -300,6 +302,7 @@ type Item struct {
     Description string `xml:"description"`
 }
 
+
 func fetchXmlData(url string) xmlParse{
     
     resp, err := http.Get(url)
@@ -321,14 +324,69 @@ func fetchXmlData(url string) xmlParse{
     return v 
 }
 
-func (cfg *apiConfig) fetchingFeeds(wg *sync.WaitGroup) {
+func (cfg *apiConfig) fetchingFeeds(wg *sync.WaitGroup, ctx context.Context) {
     feeds := cfg.getNextFeedsToFetch(10) 
-    fmt.Println(time.Now())
+    timeNow := time.Now().UTC()
     for _, feed := range feeds {
         feedData := fetchXmlData(feed.Url) 
         for _, item := range feedData.Channel.Items {
-            fmt.Println(item.Title)
+            layout := "Mon, 02 Jan 2006 15:04:05 +0000"
+            timeOfPub, err := time.Parse(layout, strings.TrimSpace(item.PubDate)) 
+            if err != nil {
+                log.Print("Couldn't parse publication time: ", err)
+            }
+            var timeOfPubNullable sql.NullTime 
+            if timeOfPub.IsZero() {
+                timeOfPubNullable.Valid = false
+            } else {
+                timeOfPubNullable.Time = timeOfPub
+                timeOfPubNullable.Valid = true
+            }
+
+            var titleNullable sql.NullString
+            if len(item.Title) == 0 {
+                titleNullable.Valid = false
+            } else {
+                titleNullable.String = item.Title
+                titleNullable.Valid = true
+            }
+
+            var urlNullable sql.NullString
+            if len(item.Link) == 0 {
+                urlNullable.Valid = false
+            } else {
+                urlNullable.String = item.Link
+                urlNullable.Valid = true
+            }
+
+            var descrNullable sql.NullString
+            if len(item.Description) == 0 {
+                descrNullable.Valid = false
+            } else {
+                descrNullable.String = item.Description
+                descrNullable.Valid = true
+            }
+
+            _, err = cfg.DB.CreatePost(ctx, database.CreatePostParams{
+                                                                ID: uuid.New(),
+                                                                CreatedAt: timeNow,
+                                                                UpdatedAt: timeNow,
+                                                                Title: titleNullable,
+                                                                Url: urlNullable,
+                                                                Description: descrNullable,
+                                                                PublishedAt: timeOfPubNullable,
+                                                                FeedID: feed.Id,
+                                                            })
+            if err != nil {
+                pqErr := err.(*pq.Error) 
+                if pqErr.Code.Name() == "unique_violation" {
+                    continue
+                } else {
+                    log.Println("Couldn't create post: ", err)
+                }
+            } 
         }
+        cfg.markFeedFetched(feed.Id)    
     }
 }
 
@@ -340,7 +398,7 @@ func (cfg *apiConfig) startScheduledFetching(ctx context.Context) {
             wg.Add(1)
             go func() {
                 defer wg.Done()
-                cfg.fetchingFeeds(&wg)
+                cfg.fetchingFeeds(&wg, ctx)
             }()
             select {
             case <-ticker.C:
@@ -352,6 +410,88 @@ func (cfg *apiConfig) startScheduledFetching(ctx context.Context) {
             }
         }
     }()
+}
+
+type PostJSON struct {
+    Id  uuid.UUID   `json:"id"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+    Title   *string      `json:"title"`
+    Url     *string      `json:"url"`
+    Description *string  `json:"description"`
+    PublishedAt *time.Time `json:"publsihed_ad"`
+    FeedId      uuid.UUID `json:"feed_id"`
+}
+
+func databasePostToPost(inputFeed database.GetPostByUserRow) PostJSON {
+    var convertedPubAt *time.Time
+    
+    if inputFeed.PublishedAt.Valid {
+        convertedPubAt = &inputFeed.PublishedAt.Time
+    } else {
+        convertedPubAt = nil
+    }
+
+    var convertedTitle *string
+    if inputFeed.Title.Valid {
+        convertedTitle = &inputFeed.Title.String
+    } else {
+        convertedTitle = nil
+    }
+
+    var convertedUrl *string
+    if inputFeed.Url.Valid {
+        convertedUrl = &inputFeed.Url.String
+    } else {
+        convertedUrl = nil 
+    }
+
+    var convertedDescription *string
+    if inputFeed.Url.Valid {
+        convertedDescription = &inputFeed.Description.String
+    } else {
+        convertedUrl = nil
+    }
+
+    ouputFeed := PostJSON{
+                    Id: inputFeed.ID,
+                    CreatedAt: inputFeed.CreatedAt,
+                    UpdatedAt: inputFeed.UpdatedAt,
+                    Title: convertedTitle,
+                    Url: convertedUrl,
+                    Description: convertedDescription,
+                    PublishedAt: convertedPubAt, 
+                    FeedId: inputFeed.FeedID,
+                }
+
+    return ouputFeed 
+}
+
+
+
+
+func (cfg *apiConfig) handlerGetPosts(w http.ResponseWriter, r *http.Request, user database.User) {
+    ctx := r.Context()
+    var limit int
+    var err error
+    param := r.URL.Query().Get("limit")
+    if len(param) == 0 {
+        limit = 100
+    } else {
+        limit, err = strconv.Atoi(param)
+        if err != nil {
+            log.Println("Couldn't parse url argument: ", err)
+        }
+    }
+    rows, err := cfg.DB.GetPostByUser(ctx, database.GetPostByUserParams{UserID: user.ID, Limit: int32(limit) })
+    if err != nil {
+        log.Print(err)
+    }
+    var output []PostJSON
+    for _, item := range rows {
+        output = append(output, databasePostToPost(item))
+    }
+    respondWithJSON(w, 200, output)
 }
 
 func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
